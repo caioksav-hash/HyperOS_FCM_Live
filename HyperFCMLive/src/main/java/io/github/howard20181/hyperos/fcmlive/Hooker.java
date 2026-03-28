@@ -59,6 +59,20 @@ public class Hooker extends XposedModule {
         }
     }
 
+    @Override
+    public void onPackageReady(@NonNull PackageReadyParam param) {
+        if (!param.isFirstPackage()) return;
+        var classLoader = param.getClassLoader();
+        var packageName = param.getPackageName();
+        if ("com.miui.powerkeeper".equals(packageName)) {
+            try {
+                hookGmsObserver(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "Failed to hook GmsObserver", e);
+            }
+        }
+    }
+
     private void hookGreezeManagerService(ClassLoader classLoader) throws ClassNotFoundException, NoSuchMethodException {
         var GreezeManagerServiceClass = classLoader.loadClass("com.miui.server.greeze.GreezeManagerService");
         try {
@@ -67,7 +81,11 @@ public class Hooker extends XposedModule {
             // calleePkgName = (app.info == null || app.info.packageName == null) ? app.processName : app.info.packageName
             var isAllowBroadcastMethod = GreezeManagerServiceClass.getDeclaredMethod("isAllowBroadcast", int.class, String.class, int.class, String.class, String.class);
             hook(isAllowBroadcastMethod).intercept(chain -> { // why contains? see above about where calleePkgName come from
-                if (chain.getArg(3) instanceof String calleePkgName && calleePkgName.contains(GMS_PACKAGE_NAME)) {
+                if (chain.getArg(3) instanceof String calleePkgName
+                        && calleePkgName.contains(GMS_PACKAGE_NAME)
+                        && chain.getArg(4) instanceof String action
+                        && (ACTION_REMOTE_INTENT.equals(action)
+                        || CN_DEFER_BROADCAST.contains(action))) {
                     return true;
                 }
                 return chain.proceed();
@@ -80,7 +98,8 @@ public class Hooker extends XposedModule {
             // boolean deferBroadcastForMiui(String action)
             var deferBroadcastForMiuiMethod = GreezeManagerServiceClass.getDeclaredMethod("deferBroadcastForMiui", String.class);
             hook(deferBroadcastForMiuiMethod).intercept(chain -> {
-                if (chain.getArg(0) instanceof String action && CN_DEFER_BROADCAST.contains(action)) {
+                if (chain.getArg(0) instanceof String action
+                        && CN_DEFER_BROADCAST.contains(action)) {
                     return false;
                 }
                 return chain.proceed();
@@ -98,7 +117,8 @@ public class Hooker extends XposedModule {
         deoptimize(triggerGMSLimitActionMethod);
     }
 
-    private void hookDomesticPolicyManager(ClassLoader classLoader) throws ClassNotFoundException, NoSuchMethodException {
+    private void hookDomesticPolicyManager(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchMethodException {
         var DomesticPolicyManagerClass = classLoader.loadClass("com.miui.server.greeze.DomesticPolicyManager");
         // boolean deferBroadcast(String action)
         var deferBroadcastMethod = DomesticPolicyManagerClass.getDeclaredMethod("deferBroadcast", String.class);
@@ -106,7 +126,8 @@ public class Hooker extends XposedModule {
         deoptimize(deferBroadcastMethod);
     }
 
-    private void hookListAppsManager(ClassLoader classLoader) throws ClassNotFoundException, NoSuchFieldException {
+    private void hookListAppsManager(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchFieldException {
         var ListAppsManagerClass = classLoader.loadClass("com.miui.server.greeze.power.ListAppsManager");
         var mSystemBlackListField = ListAppsManagerClass.getDeclaredField("mSystemBlackList");
         mSystemBlackListField.setAccessible(true);
@@ -117,7 +138,7 @@ public class Hooker extends XposedModule {
                     return chain.proceed();
                 } finally {
                     try {
-                        List<String> mSystemBlackList = (List<String>) mSystemBlackListField.get(chain.getThisObject());
+                        var mSystemBlackList = (List<String>) mSystemBlackListField.get(chain.getThisObject());
                         if (mSystemBlackList != null) {
                             mSystemBlackList.remove(GMS_PACKAGE_NAME);
                         }
@@ -157,14 +178,15 @@ public class Hooker extends XposedModule {
         deoptimize(checkApplicationAutoStartMethod);
     }
 
-    private void hookProcessPolicy(ClassLoader classLoader) throws ClassNotFoundException, NoSuchMethodException {
+    private void hookProcessPolicy(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchMethodException {
         var ProcessPolicyClass = classLoader.loadClass("com.android.server.am.ProcessPolicy");
         var getWhiteListMethod = ProcessPolicyClass.getDeclaredMethod("getWhiteList", int.class);
         hook(getWhiteListMethod).intercept(chain -> {
             var result = chain.proceed();
             if (chain.getArg(0) instanceof Integer flags && (flags & 1) != 0) {
                 if (result instanceof List<?>) {
-                    List<String> whiteList = (List<String>) result;
+                    var whiteList = (List<String>) result;
                     whiteList.add(GMS_PACKAGE_NAME);
                     whiteList.add(GMS_PERSISTENT_PROCESS_NAME);
                 }
@@ -173,7 +195,8 @@ public class Hooker extends XposedModule {
         });
     }
 
-    private void hookAwareResourceControl(ClassLoader classLoader) throws ClassNotFoundException, NoSuchFieldException {
+    private void hookAwareResourceControl(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchFieldException {
         var AwareResourceControlClass = classLoader.loadClass("com.miui.server.greeze.power.AwareResourceControl");
         var mNoNetworkBlackUidsField = AwareResourceControlClass.getDeclaredField("mNoNetworkBlackUids");
         mNoNetworkBlackUidsField.setAccessible(true);
@@ -184,7 +207,7 @@ public class Hooker extends XposedModule {
                     return chain.proceed();
                 } finally {
                     try {
-                        List<String> mNoNetworkBlackUids = (List<String>) mNoNetworkBlackUidsField.get(chain.getThisObject());
+                        var mNoNetworkBlackUids = (List<String>) mNoNetworkBlackUidsField.get(chain.getThisObject());
                         if (mNoNetworkBlackUids != null) {
                             mNoNetworkBlackUids.remove(GMS_PACKAGE_NAME);
                         }
@@ -195,5 +218,21 @@ public class Hooker extends XposedModule {
             });
             deoptimize(constructor);
         }
+    }
+
+    private void hookGmsObserver(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchMethodException {
+        var GmsObserverClass = classLoader.loadClass("com.miui.powerkeeper.utils.GmsObserver");
+        Hooker hooker = chain -> {
+            var args = chain.getArgs().toArray();
+            args[0] = false;
+            return chain.proceed(args);
+        };
+        var updateGmsAlarmMethod = GmsObserverClass.getDeclaredMethod("updateGmsAlarm", boolean.class);
+        hook(updateGmsAlarmMethod).intercept(hooker);
+        deoptimize(updateGmsAlarmMethod);
+        var updateGmsNetWorkMethod = GmsObserverClass.getDeclaredMethod("updateGmsNetWork", boolean.class);
+        hook(updateGmsNetWorkMethod).intercept(hooker);
+        deoptimize(updateGmsNetWorkMethod);
     }
 }

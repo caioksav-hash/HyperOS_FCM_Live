@@ -49,6 +49,11 @@ public class Hooker extends XposedModule {
             } catch (Exception e) {
                 log(Log.ERROR, TAG, "Failed to hook ProcessPolicy", e);
             }
+            try {
+                hookAwareResourceControl(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "Failed to hook AwareResourceControl", e);
+            }
         } catch (Throwable tr) {
             log(Log.ERROR, TAG, "Failed to hook SystemServer", tr);
         }
@@ -63,15 +68,7 @@ public class Hooker extends XposedModule {
             var isAllowBroadcastMethod = GreezeManagerServiceClass.getDeclaredMethod("isAllowBroadcast", int.class, String.class, int.class, String.class, String.class);
             hook(isAllowBroadcastMethod).intercept(chain -> { // why contains? see above about where calleePkgName come from
                 if (chain.getArg(3) instanceof String calleePkgName && calleePkgName.contains(GMS_PACKAGE_NAME)) {
-                    try {
-                        if (chain.getArg(4) instanceof String action
-                                && (ACTION_REMOTE_INTENT.equals(action)
-                                || CN_DEFER_BROADCAST.contains(action))) {
-                            return true;
-                        }
-                    } catch (Exception e) {
-                        log(Log.ERROR, TAG, "Failed to modify GreezeManagerService#isAllowBroadcast", e);
-                    }
+                    return true;
                 }
                 return chain.proceed();
             });
@@ -174,5 +171,29 @@ public class Hooker extends XposedModule {
             }
             return result;
         });
+    }
+
+    private void hookAwareResourceControl(ClassLoader classLoader) throws ClassNotFoundException, NoSuchFieldException {
+        var AwareResourceControlClass = classLoader.loadClass("com.miui.server.greeze.power.AwareResourceControl");
+        var mNoNetworkBlackUidsField = AwareResourceControlClass.getDeclaredField("mNoNetworkBlackUids");
+        mNoNetworkBlackUidsField.setAccessible(true);
+        var AwareResourceControlConstructors = AwareResourceControlClass.getDeclaredConstructors();
+        for (var constructor : AwareResourceControlConstructors) {
+            hook(constructor).intercept(chain -> {
+                try {
+                    return chain.proceed();
+                } finally {
+                    try {
+                        List<String> mNoNetworkBlackUids = (List<String>) mNoNetworkBlackUidsField.get(chain.getThisObject());
+                        if (mNoNetworkBlackUids != null) {
+                            mNoNetworkBlackUids.remove(GMS_PACKAGE_NAME);
+                        }
+                    } catch (Exception e) {
+                        log(Log.ERROR, TAG, "Failed to modify AwareResourceControl constructor", e);
+                    }
+                }
+            });
+            deoptimize(constructor);
+        }
     }
 }

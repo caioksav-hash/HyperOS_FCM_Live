@@ -1,12 +1,21 @@
 package io.github.howard20181.hyperos.fcmlive;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.PowerExemptionManager;
+import android.os.WorkSource;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
 
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
@@ -54,6 +63,18 @@ public class Hooker extends XposedModule {
             } catch (Exception e) {
                 log(Log.ERROR, TAG, "Failed to hook AwareResourceControl", e);
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    hookPowerManagerService(classLoader);
+                } catch (Exception e) {
+                    log(Log.ERROR, TAG, "Failed to hook PowerManagerService", e);
+                }
+            }
+            try {
+                hookActivityManagerService(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "Failed to hook ActivityManagerService", e);
+            }
         } catch (Throwable tr) {
             log(Log.ERROR, TAG, "Failed to hook SystemServer", tr);
         }
@@ -70,19 +91,32 @@ public class Hooker extends XposedModule {
             } catch (Exception e) {
                 log(Log.ERROR, TAG, "Failed to hook GmsObserver", e);
             }
+            try {
+                hookGlobalFeatureConfigureHelper(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "Failed to hook GlobalFeatureConfigureHelper", e);
+            }
         }
     }
 
-    private void hookGreezeManagerService(ClassLoader classLoader) throws ClassNotFoundException, NoSuchMethodException {
+    private void hookGreezeManagerService(ClassLoader classLoader)
+            throws ClassNotFoundException, NoSuchMethodException {
         var GreezeManagerServiceClass = classLoader.loadClass("com.miui.server.greeze.GreezeManagerService");
         try {
-            // boolean isAllowBroadcast(int callerUid, String callerPkgName, int calleeUid, String calleePkgName, String action)
-            // BroadcastProcessQueue queue, am.ProcessRecord app = queue.app, app nullable but when app is null, this method will not call
+            // am.ProcessRecord app = BroadcastProcessQueue.app, app nullable
+            // but when app is null, this method will not call
             // calleePkgName = (app.info == null || app.info.packageName == null) ? app.processName : app.info.packageName
+            // It could be the process name.
+            // boolean isAllowBroadcast(int callerUid, String callerPkgName, int calleeUid, String calleePkgName, String action)
             var isAllowBroadcastMethod = GreezeManagerServiceClass.getDeclaredMethod("isAllowBroadcast", int.class, String.class, int.class, String.class, String.class);
-            hook(isAllowBroadcastMethod).intercept(chain -> { // why contains? see above about where calleePkgName come from
-                if (chain.getArg(3) instanceof String calleePkgName
-                        && calleePkgName.contains(GMS_PACKAGE_NAME)
+            hook(isAllowBroadcastMethod).intercept(chain -> {
+                if ((chain.getArg(1) instanceof String callerPkgName
+                        // callerPkgName get from intent or BroadcastRecord.callerPackage,
+                        // both are nullable, but they won't become null in FCM broadcasts.
+                        && GMS_PACKAGE_NAME.equals(callerPkgName) ||
+                        chain.getArg(3) instanceof String calleePkgName
+                                // why contains? see above about where calleePkgName come from
+                                && calleePkgName.contains(GMS_PACKAGE_NAME))
                         && chain.getArg(4) instanceof String action
                         && (ACTION_REMOTE_INTENT.equals(action)
                         || CN_DEFER_BROADCAST.contains(action))) {
@@ -222,6 +256,14 @@ public class Hooker extends XposedModule {
 
     private void hookGmsObserver(ClassLoader classLoader) throws ClassNotFoundException,
             NoSuchMethodException {
+        var NetdExecutorClass = classLoader.loadClass("com.miui.powerkeeper.utils.NetdExecutor");
+        var initGmsChainMethod = NetdExecutorClass.getDeclaredMethod("initGmsChain", String.class, int.class, String.class);
+        hook(initGmsChainMethod).intercept(chain -> {
+            var args = chain.getArgs().toArray();
+            args[2] = "ACCEPT";
+            return chain.proceed(args);
+        });
+        deoptimize(initGmsChainMethod);
         var GmsObserverClass = classLoader.loadClass("com.miui.powerkeeper.utils.GmsObserver");
         Hooker hooker = chain -> {
             var args = chain.getArgs().toArray();
@@ -237,5 +279,151 @@ public class Hooker extends XposedModule {
         var updateGoogleReletivesWakelockMethod = GmsObserverClass.getDeclaredMethod("updateGoogleReletivesWakelock", boolean.class);
         hook(updateGoogleReletivesWakelockMethod).intercept(hooker);
         deoptimize(updateGoogleReletivesWakelockMethod);
+    }
+
+    private void hookGlobalFeatureConfigureHelper(ClassLoader classLoader)
+            throws ClassNotFoundException, NoSuchMethodException {
+        var GlobalFeatureConfigureHelperClass = classLoader.loadClass("com.miui.powerkeeper.provider.GlobalFeatureConfigureHelper");
+        var getDozeWhiteListAppsMethod = GlobalFeatureConfigureHelperClass.getDeclaredMethod("getDozeWhiteListApps", Bundle.class);
+        hook(getDozeWhiteListAppsMethod).intercept(chain -> {
+            var result = chain.proceed();
+            if (result instanceof List<?>) {
+                var whiteList = (List<String>) result;
+                if (!whiteList.contains(GMS_PACKAGE_NAME)) {
+                    whiteList.add(GMS_PACKAGE_NAME);
+                }
+            }
+            return result;
+        });
+    }
+
+    private static PowerExemptionManager powerExemptionManager = null;
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private static PowerExemptionManager getPowerExemptionManager(Context context) {
+        if (powerExemptionManager == null) {
+            // mContext.getSystemService("power_exemption")
+            powerExemptionManager = new PowerExemptionManager(context);
+        }
+        return powerExemptionManager;
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private void hookPowerManagerService(ClassLoader classLoader)
+            throws ClassNotFoundException, NoSuchMethodException, NoSuchFieldException {
+        var IWakeLockCallbackClass = classLoader.loadClass("android.os.IWakeLockCallback");
+        var PowerManagerServiceClass = classLoader.loadClass("com.android.server.power.PowerManagerService");
+        var mContextField = PowerManagerServiceClass.getDeclaredField("mContext");
+        mContextField.setAccessible(true);
+        // acquireWakeLockInternal(IBinder lock, int displayId, int flags, String tag, String packageName, WorkSource ws, String historyTag, int uid, int pid, IWakeLockCallback callback)
+        var acquireWakeLockInternalMethod = PowerManagerServiceClass.getDeclaredMethod("acquireWakeLockInternal", IBinder.class, int.class, int.class, String.class, String.class, WorkSource.class, String.class, int.class, int.class, IWakeLockCallbackClass);
+        hook(acquireWakeLockInternalMethod).intercept(chain -> {
+            if (chain.getArg(3) instanceof String tag && "GOOGLE_C2DM".equals(tag)
+                    && chain.getArg(4) instanceof String packageName) {
+                if (mContextField.get(chain.getThisObject()) instanceof Context mContext) {
+                    getPowerExemptionManager(mContext).addToTemporaryAllowList(
+                            packageName, 102 /* PowerExemptionManager.REASON_PUSH_MESSAGING_OVER_QUOTA */,
+                            tag, 2000);
+                }
+            }
+            return chain.proceed();
+        });
+    }
+
+    private void hookActivityManagerService(ClassLoader classLoader) throws ClassNotFoundException,
+            NoSuchMethodException, NoSuchFieldException {
+        var ActivityManagerServiceClass = classLoader.loadClass("com.android.server.am.ActivityManagerService");
+        var mContextField = ActivityManagerServiceClass.getDeclaredField("mContext");
+        mContextField.setAccessible(true);
+        var IApplicationThreadClass = classLoader.loadClass("android.app.IApplicationThread");
+        var IIntentReceiverClass = classLoader.loadClass("android.content.IIntentReceiver");
+        var ProcessRecordClass = classLoader.loadClass("com.android.server.am.ProcessRecord");
+        var infoField = ProcessRecordClass.getDeclaredField("info");
+        infoField.setAccessible(true);
+        Method getRecordMethod;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12~16
+            getRecordMethod = ActivityManagerServiceClass.getDeclaredMethod("getRecordForAppLOSP", IApplicationThreadClass);
+        } else {
+            // Android 8~11
+            getRecordMethod = ActivityManagerServiceClass.getDeclaredMethod("getRecordForAppLocked", IApplicationThreadClass);
+        }
+        Method broadcastMethod;
+        int intentArgIndex;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // int broadcastIntentWithFeature(IApplicationThread caller, String callingFeatureId,
+            //    Intent intent, String resolvedType, IIntentReceiver resultTo,
+            //    int resultCode, String resultData, Bundle resultExtras,
+            //    String[] requiredPermissions, String[] excludedPermissions,
+            //    String[] excludedPackages, int appOp, Bundle bOptions,
+            //    boolean serialized, boolean sticky, int userId)
+            intentArgIndex = 2;
+            broadcastMethod = ActivityManagerServiceClass.getDeclaredMethod("broadcastIntentWithFeature",
+                    IApplicationThreadClass, String.class,
+                    Intent.class, String.class, IIntentReceiverClass,
+                    int.class, String.class, Bundle.class,
+                    String[].class, String[].class,
+                    String[].class, int.class, Bundle.class,
+                    boolean.class, boolean.class, int.class);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // int broadcastIntentWithFeature(IApplicationThread caller, String callingFeatureId,
+            //    Intent intent, String resolvedType, IIntentReceiver resultTo,
+            //    int resultCode, String resultData, Bundle resultExtras,
+            //    String[] requiredPermissions, String[] excludedPermissions, int appOp, Bundle bOptions,
+            //    boolean serialized, boolean sticky, int userId)
+            intentArgIndex = 2;
+            broadcastMethod = ActivityManagerServiceClass.getDeclaredMethod("broadcastIntentWithFeature",
+                    IApplicationThreadClass, String.class,
+                    Intent.class, String.class, IIntentReceiverClass,
+                    int.class, String.class, Bundle.class,
+                    String[].class, String[].class, int.class, Bundle.class,
+                    boolean.class, boolean.class, int.class);
+        } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.R) {
+            // int broadcastIntentWithFeature(IApplicationThread caller, String callingFeatureId,
+            //    Intent intent, String resolvedType, IIntentReceiver resultTo,
+            //    int resultCode, String resultData, Bundle resultExtras,
+            //    String[] requiredPermissions, int appOp, Bundle bOptions,
+            //    boolean serialized, boolean sticky, int userId)
+            intentArgIndex = 2;
+            broadcastMethod = ActivityManagerServiceClass.getDeclaredMethod("broadcastIntentWithFeature",
+                    IApplicationThreadClass, String.class,
+                    Intent.class, String.class, IIntentReceiverClass,
+                    int.class, String.class, Bundle.class,
+                    String[].class, int.class, Bundle.class,
+                    boolean.class, boolean.class, int.class);
+        } else {
+            // int broadcastIntent(IApplicationThread caller,
+            //    Intent intent, String resolvedType, IIntentReceiver resultTo,
+            //    int resultCode, String resultData, Bundle resultExtras,
+            //    String[] requiredPermissions, int appOp, Bundle bOptions,
+            //    boolean serialized, boolean sticky, int userId)
+            intentArgIndex = 1;
+            broadcastMethod = ActivityManagerServiceClass.getDeclaredMethod("broadcastIntent",
+                    IApplicationThreadClass,
+                    Intent.class, String.class, IIntentReceiverClass,
+                    int.class, String.class, Bundle.class,
+                    String[].class, int.class, Bundle.class,
+                    boolean.class, boolean.class, int.class);
+        }
+        hook(broadcastMethod).intercept(chain -> {
+            if (chain.getArg(intentArgIndex) instanceof Intent intent) {
+                if (ACTION_REMOTE_INTENT.equals(intent.getAction())
+                        && getInvoker(getRecordMethod).invoke(chain.getThisObject(), chain.getArg(0)) instanceof Object app
+                        && infoField.get(app) instanceof ApplicationInfo info
+                        && GMS_PACKAGE_NAME.equals(info.packageName)) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                            && intent.getPackage() instanceof String packageName
+                            && mContextField.get(chain.getThisObject()) instanceof Context mContext) {
+                        getPowerExemptionManager(mContext).addToTemporaryAllowList(
+                                packageName, 102 /* PowerExemptionManager.REASON_PUSH_MESSAGING_OVER_QUOTA */,
+                                "GOOGLE_C2DM", 2000);
+                    }
+                    if ((intent.getFlags() & ~Intent.FLAG_INCLUDE_STOPPED_PACKAGES) != 0) {
+                        intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+                    }
+                }
+            }
+            return chain.proceed();
+        });
     }
 }

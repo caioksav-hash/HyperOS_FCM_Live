@@ -7,9 +7,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.os.PowerExemptionManager;
-import android.os.WorkSource;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -63,13 +61,6 @@ public class Hooker extends XposedModule {
             } catch (Exception e) {
                 log(Log.ERROR, TAG, "Failed to hook AwareResourceControl", e);
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                try {
-                    hookPowerManagerService(classLoader);
-                } catch (Exception e) {
-                    log(Log.ERROR, TAG, "Failed to hook PowerManagerService", e);
-                }
-            }
             try {
                 hookActivityManagerService(classLoader);
             } catch (Exception e) {
@@ -109,17 +100,27 @@ public class Hooker extends XposedModule {
             // It could be the process name.
             // boolean isAllowBroadcast(int callerUid, String callerPkgName, int calleeUid, String calleePkgName, String action)
             var isAllowBroadcastMethod = GreezeManagerServiceClass.getDeclaredMethod("isAllowBroadcast", int.class, String.class, int.class, String.class, String.class);
+            var getPackageNameFromUidMethod = GreezeManagerServiceClass.getDeclaredMethod("getPackageNameFromUid", int.class);
+            getPackageNameFromUidMethod.setAccessible(true);
             hook(isAllowBroadcastMethod).intercept(chain -> {
-                if ((chain.getArg(1) instanceof String callerPkgName
+                String calleePkgName = chain.getArg(3) instanceof String calleeProcessName ? calleeProcessName : null;
+                try {
+                    if (chain.getArg(2) instanceof Integer calleeUid
+                            && getInvoker(getPackageNameFromUidMethod).invoke(chain.getThisObject(), calleeUid) instanceof String calleePackageName) {
+                        calleePkgName = calleePackageName;
+                    }
+                } catch (Exception e) {
+                    log(Log.ERROR, TAG, "Failed to get callee package name", e);
+                }
+                if (chain.getArg(4) instanceof String action
+                        && ((chain.getArg(1) instanceof String callerPkgName
                         // callerPkgName get from intent or BroadcastRecord.callerPackage,
                         // both are nullable, but they won't become null in FCM broadcasts.
-                        && GMS_PACKAGE_NAME.equals(callerPkgName) ||
-                        chain.getArg(3) instanceof String calleePkgName
-                                // calleePkgName may be process name
-                                && calleePkgName.startsWith(GMS_PACKAGE_NAME))
-                        && chain.getArg(4) instanceof String action
-                        && (ACTION_REMOTE_INTENT.equals(action)
-                        || CN_DEFER_BROADCAST.contains(action))) {
+                        && GMS_PACKAGE_NAME.equals(callerPkgName)
+                        && ACTION_REMOTE_INTENT.equals(action))
+                        || ((GMS_PACKAGE_NAME.equals(calleePkgName)
+                        || GMS_PERSISTENT_PROCESS_NAME.equals(calleePkgName))
+                        && CN_DEFER_BROADCAST.contains(action)))) {
                     return true;
                 }
                 return chain.proceed();
@@ -177,7 +178,7 @@ public class Hooker extends XposedModule {
                             mSystemBlackList.remove(GMS_PACKAGE_NAME);
                         }
                     } catch (Exception e) {
-                        log(Log.ERROR, TAG, "Failed to modify ListAppsManager$PowerStrategyMode constructor", e);
+                        log(Log.ERROR, TAG, "Failed to modify ListAppsManager.mSystemBlackList", e);
                     }
                 }
             });
@@ -246,7 +247,7 @@ public class Hooker extends XposedModule {
                             mNoNetworkBlackUids.remove(GMS_PACKAGE_NAME);
                         }
                     } catch (Exception e) {
-                        log(Log.ERROR, TAG, "Failed to modify AwareResourceControl constructor", e);
+                        log(Log.ERROR, TAG, "Failed to modify AwareResourceControl.mNoNetworkBlackUids", e);
                     }
                 }
             });
@@ -306,29 +307,6 @@ public class Hooker extends XposedModule {
             powerExemptionManager = new PowerExemptionManager(context);
         }
         return powerExemptionManager;
-    }
-
-    @RequiresApi(Build.VERSION_CODES.S)
-    private void hookPowerManagerService(ClassLoader classLoader)
-            throws ClassNotFoundException, NoSuchMethodException, NoSuchFieldException {
-        var IWakeLockCallbackClass = classLoader.loadClass("android.os.IWakeLockCallback");
-        var PowerManagerServiceClass = classLoader.loadClass("com.android.server.power.PowerManagerService");
-        var mContextField = PowerManagerServiceClass.getDeclaredField("mContext");
-        mContextField.setAccessible(true);
-        // acquireWakeLockInternal(IBinder lock, int displayId, int flags, String tag, String packageName, WorkSource ws, String historyTag, int uid, int pid, IWakeLockCallback callback)
-        var acquireWakeLockInternalMethod = PowerManagerServiceClass.getDeclaredMethod("acquireWakeLockInternal", IBinder.class, int.class, int.class, String.class, String.class, WorkSource.class, String.class, int.class, int.class, IWakeLockCallbackClass);
-        hook(acquireWakeLockInternalMethod).intercept(chain -> {
-            if (chain.getArg(3) instanceof String tag && "GOOGLE_C2DM".equals(tag)
-                    && chain.getArg(4) instanceof String packageName) {
-                if (mContextField.get(chain.getThisObject()) instanceof Context mContext) {
-                    getPowerExemptionManager(mContext).addToTemporaryAllowList(
-                            packageName, 102 /* PowerExemptionManager.REASON_PUSH_MESSAGING_OVER_QUOTA */,
-                            tag, 2000);
-                }
-            }
-            return chain.proceed();
-        });
-        deoptimize(acquireWakeLockInternalMethod);
     }
 
     private void hookActivityManagerService(ClassLoader classLoader) throws ClassNotFoundException,

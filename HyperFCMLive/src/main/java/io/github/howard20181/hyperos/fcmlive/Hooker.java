@@ -115,8 +115,8 @@ public class Hooker extends XposedModule {
                         // both are nullable, but they won't become null in FCM broadcasts.
                         && GMS_PACKAGE_NAME.equals(callerPkgName) ||
                         chain.getArg(3) instanceof String calleePkgName
-                                // why contains? see above about where calleePkgName come from
-                                && calleePkgName.contains(GMS_PACKAGE_NAME))
+                                // calleePkgName may be process name
+                                && calleePkgName.startsWith(GMS_PACKAGE_NAME))
                         && chain.getArg(4) instanceof String action
                         && (ACTION_REMOTE_INTENT.equals(action)
                         || CN_DEFER_BROADCAST.contains(action))) {
@@ -126,7 +126,7 @@ public class Hooker extends XposedModule {
             });
             deoptimize(isAllowBroadcastMethod);
         } catch (Exception e) {
-            log(Log.ERROR, TAG, "Failed to hook GreezeManagerService#isAllowBroadcast, trying isAllowBroadcastV2", e);
+            log(Log.ERROR, TAG, "Failed to hook GreezeManagerService#isAllowBroadcast", e);
         }
         try {
             // boolean deferBroadcastForMiui(String action)
@@ -328,6 +328,7 @@ public class Hooker extends XposedModule {
             }
             return chain.proceed();
         });
+        deoptimize(acquireWakeLockInternalMethod);
     }
 
     private void hookActivityManagerService(ClassLoader classLoader) throws ClassNotFoundException,
@@ -418,12 +419,13 @@ public class Hooker extends XposedModule {
                                 packageName, 102 /* PowerExemptionManager.REASON_PUSH_MESSAGING_OVER_QUOTA */,
                                 "GOOGLE_C2DM", 2000);
                     }
-                    if ((intent.getFlags() & ~Intent.FLAG_INCLUDE_STOPPED_PACKAGES) != 0) {
+                    if ((intent.getFlags() & Intent.FLAG_INCLUDE_STOPPED_PACKAGES) == 0) {
                         intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
                     }
                 }
             }
             return chain.proceed();
         });
+        deoptimize(broadcastMethod);
     }
 }

